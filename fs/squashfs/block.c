@@ -329,130 +329,40 @@ static int squashfs_bio_submit(struct squashfs_read_request *req)
 	}
 	return 0;
 
-bio_alloc_failed:
-	kfree(bio_req);
-req_alloc_failed:
-	unlock_buffer(bh);
-	while (--nr_buffers >= b)
-		if (req->bh[nr_buffers])
-			put_bh(req->bh[nr_buffers]);
-	while (--b >= 0)
-		if (req->bh[b])
-			wait_on_buffer(req->bh[b]);
-getblk_failed:
-	free_read_request(req, -ENOMEM);
-	return -ENOMEM;
-}
+	if (compressed) {
+		if (!msblk->stream)
+			goto read_failure;
+		length = squashfs_decompress(msblk, bh, b, offset, length,
+			output);
+		if (length < 0)
+			goto read_failure;
+	} else {
+		/*
+		 * Block is uncompressed.
+		 */
+		int in, pg_offset = 0;
+		void *data = squashfs_first_page(output);
 
-static int read_metadata_block(struct squashfs_read_request *req,
-			       u64 *next_index)
-{
-	int ret, error, bytes_read = 0, bytes_uncompressed = 0;
-	struct squashfs_sb_info *msblk = req->sb->s_fs_info;
-
-	if (req->index + 2 > msblk->bytes_used) {
-		free_read_request(req, -EINVAL);
-		return -EINVAL;
-	}
-	req->length = 2;
-
-	/* Do not read beyond the end of the device */
-	if (req->index + req->length > msblk->bytes_used)
-		req->length = msblk->bytes_used - req->index;
-	req->data_processing = SQUASHFS_METADATA;
-
-	/*
-	 * Reading metadata is always synchronous because we don't know the
-	 * length in advance and the function is expected to update
-	 * 'next_index' and return the length.
-	 */
-	req->synchronous = true;
-	req->res = &error;
-	req->bytes_read = &bytes_read;
-	req->bytes_uncompressed = &bytes_uncompressed;
-
-	TRACE("Metadata block @ 0x%llx, %scompressed size %d, src size %d\n",
-	      req->index, req->compressed ? "" : "un", bytes_read,
-	      req->output->length);
-
-	ret = squashfs_bio_submit(req);
-	if (ret)
-		return ret;
-	if (error)
-		return error;
-	if (next_index)
-		*next_index += 2 + bytes_read;
-	return bytes_uncompressed;
-}
-
-static int read_data_block(struct squashfs_read_request *req, int length,
-			   u64 *next_index, bool synchronous)
-{
-	int ret, error = 0, bytes_uncompressed = 0, bytes_read = 0;
-
-	req->compressed = SQUASHFS_COMPRESSED_BLOCK(length);
-	req->length = length = SQUASHFS_COMPRESSED_SIZE_BLOCK(length);
-	req->data_processing = req->compressed ? SQUASHFS_DECOMPRESS
-					       : SQUASHFS_COPY;
-
-	req->synchronous = synchronous;
-	if (synchronous) {
-		req->res = &error;
-		req->bytes_read = &bytes_read;
-		req->bytes_uncompressed = &bytes_uncompressed;
-	}
-
-	TRACE("Data block @ 0x%llx, %scompressed size %d, src size %d\n",
-	      req->index, req->compressed ? "" : "un", req->length,
-	      req->output->length);
-
-	ret = squashfs_bio_submit(req);
-	if (ret)
-		return ret;
-	if (synchronous)
-		ret = error ? error : bytes_uncompressed;
-	if (next_index)
-		*next_index += length;
-	return ret;
-}
-
-/*
- * Read and decompress a metadata block or datablock.  Length is non-zero
- * if a datablock is being read (the size is stored elsewhere in the
- * filesystem), otherwise the length is obtained from the first two bytes of
- * the metadata block.  A bit in the length field indicates if the block
- * is stored uncompressed in the filesystem (usually because compression
- * generated a larger block - this does occasionally happen with compression
- * algorithms).
- */
-static int __squashfs_read_data(struct super_block *sb, u64 index, int length,
-	u64 *next_index, struct squashfs_page_actor *output, bool sync)
-{
-	struct squashfs_read_request *req;
-
-	req = kcalloc(1, sizeof(struct squashfs_read_request), GFP_KERNEL);
-	if (!req) {
-		if (!sync)
-			squashfs_page_actor_free(output, -ENOMEM);
-		return -ENOMEM;
-	}
-
-	req->sb = sb;
-	req->index = index;
-	req->output = output;
-
-	if (next_index)
-		*next_index = index;
-
-	if (length)
-		length = read_data_block(req, length, next_index, sync);
-	else
-		length = read_metadata_block(req, next_index);
-
-	if (length < 0) {
-		ERROR("squashfs_read_data failed to read block 0x%llx\n",
-		      (unsigned long long)index);
-		return -EIO;
+		for (bytes = length; k < b; k++) {
+			in = min(bytes, msblk->devblksize - offset);
+			bytes -= in;
+			while (in) {
+				if (pg_offset == PAGE_CACHE_SIZE) {
+					data = squashfs_next_page(output);
+					pg_offset = 0;
+				}
+				avail = min_t(int, in, PAGE_CACHE_SIZE -
+						pg_offset);
+				memcpy(data + pg_offset, bh[k]->b_data + offset,
+						avail);
+				in -= avail;
+				pg_offset += avail;
+				offset += avail;
+			}
+			offset = 0;
+			put_bh(bh[k]);
+		}
+		squashfs_finish_page(output);
 	}
 
 	return length;
