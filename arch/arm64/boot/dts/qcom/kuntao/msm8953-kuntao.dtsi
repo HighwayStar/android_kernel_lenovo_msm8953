@@ -146,3 +146,8 @@
 		ftrace-size = <0x15000>;
 	};
 };
+
+&apps_iommu {
+	qcom,no-aarch64;
+};
+
