@@ -677,7 +677,7 @@ extern int FPS_register_notifier(struct notifier_block *nb,
 extern int FPS_unregister_notifier(struct notifier_block *nb,
 				unsigned long stype);
 
-#if defined(CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_TEST_REPORTING)
+#if defined(CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_TEST_REPORTING_LENOVO)
 int synaptics_rmi4_scan_f54_ctrl_reg_info(
 	struct synaptics_rmi4_func_packet_regs *regs);
 

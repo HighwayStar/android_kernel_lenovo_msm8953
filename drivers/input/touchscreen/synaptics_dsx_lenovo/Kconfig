@@ -2,6 +2,15 @@
 # Synaptics DSX touchscreen driver configuration
 #
 
+config TOUCHSCREEN_SYNAPTICS_DSX_LENOVO
+	bool "Synaptics DSX v2.6 touchscreen"
+	default n
+	help
+	  Say Y here if you have a Synaptics DSX Lenovo variant touchscreen connected
+	  to your system.
+
+	  If unsure, say N.
+
 config TOUCHSCREEN_SYNAPTICS_DSX_I2C_LENOVO
 	tristate "Synaptics DSX I2C touchscreen (Lenovo)"
 	depends on I2C
