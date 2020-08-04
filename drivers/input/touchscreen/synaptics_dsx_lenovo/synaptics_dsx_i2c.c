@@ -35,7 +35,6 @@
 #include <linux/reboot.h>
 #include <linux/input/synaptics_rmi_dsx.h>
 
-#include "./tpd_property/tpd_property.h"
 #include "synaptics_dsx_i2c.h"
 #include "synaptics_dsx_control_access_block.h"
 #include <linux/pinctrl/consumer.h>
@@ -699,7 +698,6 @@ static atomic_t glove_ctrl;
 static int letter = 0;
 // @ flag for represents weather the touch information has been set.
 unsigned int have_correct_setting = 0;
-struct tpd_version_info *tpd_info_t = NULL;
 
 static unsigned char power_sleep_value = 1;
 static struct synaptics_dsx_func_patch power_sleep_func_patch = {
@@ -2409,93 +2407,6 @@ DEFINE_MUTEX(exp_fn_ctrl_mutex);
 static struct synaptics_exp_fn_ctrl exp_fn_ctrl;
 static struct semaphore reset_semaphore;
 
-static int tpd_gloved_control(unsigned int on)
-{
-	struct synaptics_rmi4_data *rmi4_data;
-	struct synaptics_rmi4_func_packet_regs *regs;
-	struct synaptics_rmi4_packet_reg *reg;
-	int retval;
-
-	mutex_lock(&exp_fn_ctrl_mutex);
-	rmi4_data = exp_fn_ctrl.rmi4_data_ptr;
-	mutex_unlock(&exp_fn_ctrl_mutex);
-
-	regs = find_function(SYNAPTICS_RMI4_F12);
-	if (!regs)
-		return -ENOENT;
-
-	reg = find_packet_reg(regs, 23);
-	if (!reg)
-		return -ENOENT;
-
-	if (!reg || !reg->size) {
-		pr_err("register %d not found or zero size\n", reg->r_number);
-		return -EINVAL;
-	}
-
-	if (reg->offset == -1) {
-		pr_err("touch register error: can't read r%d - not present\n",
-			reg->r_number);
-		return -ENOENT;
-	}
-
-	retval = rmi4_data->i2c_read(rmi4_data,
-			regs->base_addr + reg->offset,
-			reg->data, 1);
-	pr_debug("read value 0x%02x.\n",*(reg->data));
-
-	if(on) {
-		*(reg->data) |= 0x20; //bit 5
-	}else {
-		*(reg->data) &= 0xDF;
-	}
-	retval = rmi4_data->i2c_write(rmi4_data,
-			regs->base_addr + reg->offset,
-			reg->data , 1);
-
-	pr_debug("F%02x%c reading r%d{%X}, size %d, after value 0x%02x.\n",
-			regs->f_number & 0xff,
-			register_type_to_ascii(regs->f_number & 0xf00),
-			reg->r_number, regs->base_addr + reg->offset,
-			reg->size, *(reg->data));
-	if (retval < 0)
-		return retval;
-
-	return retval;
-}
-
-int get_tpd_info(void)
-{
-	struct synaptics_rmi4_data *rmi4_data;
-	struct synaptics_rmi4_device_info *rmi;
-	unsigned int build_id, config_id;
-
-	mutex_lock(&exp_fn_ctrl_mutex);
-	rmi4_data = exp_fn_ctrl.rmi4_data_ptr;
-	mutex_unlock(&exp_fn_ctrl_mutex);
-	if(!tpd_info_t)
-		return -1;
-
-	rmi = &(rmi4_data->rmi4_mod_info);
-	batohui(&build_id, rmi->build_id, sizeof(rmi->build_id));
-	batohui(&config_id, rmi->config_id, sizeof(rmi->config_id));
-
-
-	pr_err(
-		"%s%s\n%s%x\n%s%x\n",
-		"Product ID: ", rmi->product_id_string,
-		"Build ID: ", build_id,
-		"Config ID: ", config_id);
-
-	tpd_info_t->product_id = rmi->product_id_string;
-	tpd_info_t->build_id = build_id;
-	tpd_info_t->config_id = config_id;
-
-	have_correct_setting = 1;
-	return 0;
-}
-EXPORT_SYMBOL(get_tpd_info);
-
 unsigned int get_glove_ctrl(void)
 {
 	return atomic_read(&glove_ctrl);
@@ -2508,7 +2419,6 @@ void set_glove_ctrl(unsigned int val)
 		if(atomic_cmpxchg(&glove_ctrl, 0, 1) == 0) {
 			pr_err("%s, setting glove flag is  = %d.\n",
 				 __func__, atomic_read(&glove_ctrl));
-			tpd_gloved_control(val);
 		}else {
 			pr_err("%s, setting glove function has been opened = %d.\n",
 				 __func__, atomic_read(&glove_ctrl));
@@ -2519,7 +2429,6 @@ void set_glove_ctrl(unsigned int val)
 		{
 			pr_err("%s, setting glove flag is  = %d.\n",
 				 __func__, atomic_read(&glove_ctrl));
-			tpd_gloved_control(val);
 		}else {
 			pr_err("%s, setting glove function has been closed = %d.\n",
 				 __func__, atomic_read(&glove_ctrl));
@@ -7022,7 +6931,7 @@ device_destroy:
 static int synaptics_rmi4_probe(struct i2c_client *client,
 		const struct i2c_device_id *dev_id)
 {
-	int retval;
+	int retval = 0;
 	struct pinctrl *pinctrl;
 	unsigned char attr_count;
 	struct synaptics_rmi4_data *rmi4_data;
@@ -7256,13 +7165,8 @@ static int synaptics_rmi4_probe(struct i2c_client *client,
 	if (rmi4_data->charger_detection_enabled)
 		ps_notifier_register(rmi4_data);
 
-	tpd_info_t = (struct tpd_version_info*)kzalloc(
-		sizeof(struct tpd_version_info), GFP_KERNEL);
-	if(!tpd_info_t)
-	{
-		pr_err("failed to alloc tpd_info_t\n");
-		//return -ENOMEM;
-	}
+
+
 	return retval;
 
 err_sysfs:
@@ -7365,7 +7269,6 @@ static int synaptics_rmi4_remove(struct i2c_client *client)
 	if (rmi4_data->charger_detection_enabled)
 		ps_notifier_unregister(rmi4_data);
 	kfree(rmi4_data);
-	kfree(tpd_info_t);
 	return 0;
 }
 
@@ -7628,7 +7531,6 @@ static int synaptics_rmi4_resume(struct device *dev)
 		statistics_start_timekeeping(rmi4_data);
 
 	/* set gloved status while resume */
-	tpd_gloved_control(atomic_read(&glove_ctrl));
 
 	synaptics_dsx_resumeinfo_finish(rmi4_data);
 	return 0;
